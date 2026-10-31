@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "garmin-claude-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  // The id below is a placeholder. Deploy to Cloudflare replaces it with a
+  // freshly provisioned namespace. Deploying manually? Run
+  // `npx wrangler kv namespace create OAUTH_KV` and paste the real id here.
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "722e2fe0c31d4a869fe19985879dbbab" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "MCP_OBJECT", "class_name": "MyMCP" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MyMCP"] }
+  ]
+}

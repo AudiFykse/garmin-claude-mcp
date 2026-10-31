@@ -1,0 +1,42 @@
+{
+  "name": "garmin-claude-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "format": "oxfmt --write .",
+    "lint:fix": "oxlint --fix",
+    "start": "wrangler dev",
+    "cf-typegen": "wrangler types",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.10.3",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "^0.20.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "oxfmt": "^0.56.0",
+    "oxlint": "^1.71.0",
+    "typescript": "6.0.3",
+    "wrangler": "^4.125.0"
+  },
+  "description": "Connect Garmin training data to Claude and push workouts back to your watch",
+  "cloudflare": {
+    "bindings": {
+      "INTERVALS_API_KEY": {
+        "description": "Your intervals.icu API key. Settings > Developer Settings."
+      },
+      "INTERVALS_ATHLETE_ID": {
+        "description": "Your intervals.icu athlete id, the iNNNNNN in your profile URL."
+      },
+      "MCP_PASSWORD": {
+        "description": "Password you will type when connecting Claude. Generate with: openssl rand -hex 32"
+      }
+    }
+  }
+}

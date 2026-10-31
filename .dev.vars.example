@@ -1,0 +1,12 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+# On Cloudflare these are set as secrets, not in this file.
+
+# From intervals.icu, Settings > Developer Settings
+INTERVALS_API_KEY=your_intervals_api_key
+
+# Your intervals.icu athlete id, the iNNNNNN in your profile URL
+INTERVALS_ATHLETE_ID=i123456
+
+# Password you will type when connecting Claude. Generate with:
+#   openssl rand -hex 32
+MCP_PASSWORD=generate_a_long_random_string
