@@ -102,6 +102,105 @@ export class MyMCP extends McpAgent {
     );
 
     this.server.tool(
+      "getActivityDetail",
+      {
+        activityId: z.string().describe("Activity id from getRecentActivities, e.g. i204077681"),
+        resolution: z.number().optional().describe("Seconds between stream samples, default 30"),
+        hrThreshold: z.number().optional().describe("Heart rate to report time above, e.g. aerobic threshold"),
+      },
+      async ({ activityId, resolution = 30, hrThreshold }) => {
+        const id = encodeURIComponent(activityId);
+        const [ivRes, stRes] = await Promise.allSettled([
+          this.icu(`/activity/${id}/intervals`),
+          this.icu(`/activity/${id}/streams?types=time,heartrate,velocity_smooth,distance,altitude,cadence`),
+        ]);
+
+        const laps = ivRes.status === "fulfilled"
+          ? ((ivRes.value?.icu_intervals ?? []) as any[]).map((v) => ({
+              type: v.type,
+              label: v.label ?? null,
+              start: v.start_time,
+              secs: v.moving_time ?? v.elapsed_time,
+              km: v.distance != null ? Math.round(v.distance) / 1000 : null,
+              avgHr: v.average_heartrate ?? null,
+              maxHr: v.max_heartrate ?? null,
+              kmh: v.average_speed != null ? Math.round(v.average_speed * 36) / 10 : null,
+              gapKmh: v.gap != null ? Math.round(v.gap * 36) / 10 : null,
+              elevGain: v.total_elevation_gain ?? null,
+              cadence: v.average_cadence ?? null,
+              decoupling: v.decoupling ?? null,
+            }))
+          : [];
+
+        const s: Record<string, number[]> = {};
+        if (stRes.status === "fulfilled" && Array.isArray(stRes.value)) {
+          for (const x of stRes.value as any[]) if (x?.type && Array.isArray(x.data)) s[x.type] = x.data;
+        }
+        const t = s.time ?? [], hr = s.heartrate ?? [], v = s.velocity_smooth ?? [], d = s.distance ?? [], alt = s.altitude ?? [], cad = s.cadence ?? [];
+        const n = t.length;
+        const mean = (a: number[]) => { const b = a.filter((x) => Number.isFinite(x) && x > 0); return b.length ? b.reduce((p, q) => p + q, 0) / b.length : null; };
+        const r1 = (x: number | null) => (x == null ? null : Math.round(x * 10) / 10);
+
+        // per-km splits
+        const splits: any[] = [];
+        if (d.length === n && n > 1) {
+          let k = 1, i0 = 0;
+          for (let i = 1; i < n; i++) {
+            if (d[i] >= k * 1000 || i === n - 1) {
+              const secs = t[i] - t[i0], dist = d[i] - d[i0];
+              if (dist > 200) splits.push({
+                km: k, secs, pace: dist > 0 ? Math.round((secs / dist) * 1000) : null,
+                avgHr: r1(mean(hr.slice(i0, i + 1))),
+                elev: alt.length === n ? Math.round(alt[i] - alt[i0]) : null,
+              });
+              i0 = i; k++;
+            }
+          }
+        }
+
+        // halves (aerobic drift)
+        let halves = null;
+        if (n > 20 && hr.length === n) {
+          const mid = Math.floor(n / 2);
+          const h = (a: number, b: number) => ({ avgHr: r1(mean(hr.slice(a, b))), kmh: v.length === n ? r1((mean(v.slice(a, b)) ?? 0) * 3.6) : null });
+          const a = h(0, mid), b = h(mid, n);
+          const ef = (x: any) => (x.avgHr && x.kmh ? x.kmh / x.avgHr : null);
+          const ea = ef(a), eb = ef(b);
+          halves = { first: a, second: b, driftPct: ea && eb ? r1(((ea - eb) / ea) * 100) : null };
+        }
+
+        let timeAboveHr = null;
+        if (hrThreshold && hr.length === n) {
+          let secs = 0;
+          for (let i = 1; i < n; i++) if (hr[i] > hrThreshold) secs += t[i] - t[i - 1];
+          timeAboveHr = { threshold: hrThreshold, secs };
+        }
+
+        // downsampled streams
+        const step = Math.max(1, resolution);
+        const samples: any[] = [];
+        let next = 0;
+        for (let i = 0; i < n; i++) {
+          if (t[i] >= next) {
+            samples.push([t[i], hr[i] ?? null, v[i] != null ? r1(v[i] * 3.6) : null, d[i] != null ? Math.round(d[i]) : null, alt[i] != null ? Math.round(alt[i]) : null, cad[i] ?? null]);
+            next = t[i] + step;
+          }
+        }
+
+        const out = {
+          activityId,
+          laps,
+          splits,
+          halves,
+          timeAboveHr,
+          streams: { columns: ["sec", "hr", "kmh", "m", "alt", "cadence"], resolution: step, data: samples },
+          errors: [ivRes, stRes].filter((r) => r.status === "rejected").map((r: any) => String(r.reason)),
+        };
+        return { content: [{ type: "text", text: JSON.stringify(out) }] };
+      },
+    );
+
+    this.server.tool(
       "deleteEvent",
       { eventId: z.number().describe("Event ID from listUpcomingEvents") },
       async ({ eventId }) => {
