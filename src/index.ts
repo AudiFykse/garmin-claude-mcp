@@ -112,7 +112,8 @@ export class MyMCP extends McpAgent {
         const id = encodeURIComponent(activityId);
         const [ivRes, stRes] = await Promise.allSettled([
           this.icu(`/activity/${id}/intervals`),
-          this.icu(`/activity/${id}/streams?types=time,heartrate,velocity_smooth,distance,altitude,cadence`),
+          this.icu(`/activity/${id}/streams?types=time,heartrate,velocity_smooth,distance,altitude,cadence,watts,stance_time,vertical_oscillation,step_length`)
+            .catch(() => this.icu(`/activity/${id}/streams?types=time,heartrate,velocity_smooth,distance,altitude,cadence`)),
         ]);
 
         const laps = ivRes.status === "fulfilled"
@@ -137,6 +138,7 @@ export class MyMCP extends McpAgent {
           for (const x of stRes.value as any[]) if (x?.type && Array.isArray(x.data)) s[x.type] = x.data;
         }
         const t = s.time ?? [], hr = s.heartrate ?? [], v = s.velocity_smooth ?? [], d = s.distance ?? [], alt = s.altitude ?? [], cad = s.cadence ?? [];
+        const pw = s.watts ?? [], gct = s.stance_time ?? [], vo = s.vertical_oscillation ?? [], stp = s.step_length ?? [];
         const n = t.length;
         const mean = (a: number[]) => { const b = a.filter((x) => Number.isFinite(x) && x > 0); return b.length ? b.reduce((p, q) => p + q, 0) / b.length : null; };
         const r1 = (x: number | null) => (x == null ? null : Math.round(x * 10) / 10);
@@ -176,15 +178,26 @@ export class MyMCP extends McpAgent {
           timeAboveHr = { threshold: hrThreshold, secs };
         }
 
-        // downsampled streams
+        // downsampled streams: mean over each window (time, distance and altitude at window start)
         const step = Math.max(1, resolution);
         const samples: any[] = [];
-        let next = 0;
-        for (let i = 0; i < n; i++) {
-          if (t[i] >= next) {
-            samples.push([t[i], hr[i] ?? null, v[i] != null ? r1(v[i] * 3.6) : null, d[i] != null ? Math.round(d[i]) : null, alt[i] != null ? Math.round(alt[i]) : null, cad[i] ?? null]);
-            next = t[i] + step;
-          }
+        const avg = (a: number[], i0: number, i1: number) => {
+          let sum = 0, k = 0;
+          for (let j = i0; j < i1; j++) { const x = a[j]; if (Number.isFinite(x) && x > 0) { sum += x; k++; } }
+          return k ? sum / k : null;
+        };
+        let i0 = 0;
+        while (i0 < n) {
+          let i1 = i0 + 1;
+          while (i1 < n && t[i1] < t[i0] + step) i1++;
+          const r0 = (x: number | null) => (x == null ? null : Math.round(x));
+          samples.push([
+            t[i0], r0(avg(hr, i0, i1)), v.length ? r1((avg(v, i0, i1) ?? 0) * 3.6) : null,
+            d[i0] != null ? Math.round(d[i0]) : null, alt[i0] != null ? Math.round(alt[i0]) : null, r0(avg(cad, i0, i1)),
+            pw.length ? r0(avg(pw, i0, i1)) : null, gct.length ? r0(avg(gct, i0, i1)) : null,
+            vo.length ? r1(avg(vo, i0, i1)) : null, stp.length ? r0(avg(stp, i0, i1)) : null,
+          ]);
+          i0 = i1;
         }
 
         const out = {
@@ -193,7 +206,7 @@ export class MyMCP extends McpAgent {
           splits,
           halves,
           timeAboveHr,
-          streams: { columns: ["sec", "hr", "kmh", "m", "alt", "cadence"], resolution: step, data: samples },
+          streams: { columns: ["sec", "hr", "kmh", "m", "alt", "cadence", "watts", "gct_ms", "vo_mm", "step_mm"], resolution: step, data: samples },
           errors: [ivRes, stRes].filter((r) => r.status === "rejected").map((r: any) => String(r.reason)),
         };
         return { content: [{ type: "text", text: JSON.stringify(out) }] };
