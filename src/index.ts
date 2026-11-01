@@ -41,6 +41,40 @@ export class MyMCP extends McpAgent {
     );
 
     this.server.tool(
+      "searchActivities",
+      {
+        oldest: z.string().describe("YYYY-MM-DD, first date to include"),
+        newest: z.string().optional().describe("YYYY-MM-DD, last date to include, default today"),
+        minKm: z.number().optional().describe("Only activities at least this long, in km"),
+        minHours: z.number().optional().describe("Only activities at least this long, in hours"),
+        type: z.string().optional().describe("Substring match on type, e.g. Run, Hike, Walk, Ski, Ride"),
+      },
+      async ({ oldest, newest, minKm, minHours, type }) => {
+        const q = `oldest=${encodeURIComponent(oldest)}${newest ? `&newest=${encodeURIComponent(newest)}` : ""}`;
+        const data = (await this.icu(`/athlete/${athlete}/activities?${q}`)) as any[];
+        const rows = (Array.isArray(data) ? data : [])
+          .filter((a) => (!minKm || (a.distance ?? 0) >= minKm * 1000)
+            && (!minHours || (a.moving_time ?? 0) >= minHours * 3600)
+            && (!type || String(a.type ?? "").toLowerCase().includes(type.toLowerCase())))
+          .map((a) => ({
+            id: a.id,
+            start: a.start_date_local,
+            type: a.type,
+            name: a.name,
+            km: a.distance != null ? Math.round(a.distance / 100) / 10 : null,
+            movingH: a.moving_time != null ? Math.round(a.moving_time / 360) / 10 : null,
+            elapsedH: a.elapsed_time != null ? Math.round(a.elapsed_time / 360) / 10 : null,
+            elevGain: a.total_elevation_gain != null ? Math.round(a.total_elevation_gain) : null,
+            maxAlt: a.max_altitude != null ? Math.round(a.max_altitude) : null,
+            avgHr: a.average_heartrate ?? null,
+            maxHr: a.max_heartrate ?? null,
+            load: a.icu_training_load ?? null,
+          }));
+        return { content: [{ type: "text", text: JSON.stringify({ count: rows.length, activities: rows }) }] };
+      },
+    );
+
+    this.server.tool(
       "getWellness",
       { days: z.number().optional().describe("Days back, default 7") },
       async ({ days = 7 }) => {
