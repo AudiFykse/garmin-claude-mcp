@@ -64,6 +64,7 @@ You will see a password page. Enter your `MCP_PASSWORD`. Once connected on web, 
 | --- | --- |
 | `getRecentActivities` | Recent training history |
 | `getWellness` | Sleep, HRV, resting HR, recovery signals |
+| `getActivityDetail` | Laps, per-km splits, aerobic drift, time above a heart rate and downsampled streams for one activity |
 | `listUpcomingEvents` | What is already on the calendar |
 | `createWorkout` | Writes a structured workout, which syncs to Garmin |
 | `updateWorkout` | Edits an existing planned workout |
