@@ -4,7 +4,7 @@ Connect your Garmin training data to Claude, and let Claude push structured work
 
 Claude reads your recent activities and wellness data, designs a workout, and writes it to your intervals.icu calendar. Intervals.icu syncs it to Garmin Connect, and it lands on your watch.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/kbaudour/garmin-claude-mcp)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/AudiFykse/garmin-claude-mcp)
 
 ## Why it works this way
 
@@ -32,7 +32,7 @@ If "Upload planned workouts" is off, everything below will work perfectly and no
 ### Option 2: Manual
 
 ```bash
-git clone https://github.com/kbaudour/garmin-claude-mcp
+git clone https://github.com/AudiFykse/garmin-claude-mcp
 cd garmin-claude-mcp
 npm install
 
@@ -48,7 +48,7 @@ npm run deploy
 
 ### Connect it to Claude
 
-In claude.ai, go to Settings > Connectors > Add custom connector and enter your worker URL **with `/mcp` on the end**:
+In claude.ai, go to Settings > Connectors > Add custom connector. Name it **GarminMCP** (exactly, so the Basekamp training app finds it) and enter your worker URL **with `/mcp` on the end**:
 
 ```
 https://garmin-claude-mcp.<subdomain>.workers.dev/mcp
