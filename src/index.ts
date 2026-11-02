@@ -32,11 +32,19 @@ export class MyMCP extends McpAgent {
 
     this.server.tool(
       "getRecentActivities",
-      { days: z.number().optional().describe("Days back, default 14") },
-      async ({ days = 14 }) => {
+      {
+        days: z.number().optional().describe("Days back, default 14"),
+        compact: z.boolean().optional().describe("Return only the core fields per activity (much smaller payload)"),
+      },
+      async ({ days = 14, compact = false }) => {
         const oldest = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
         const data = await this.icu(`/athlete/${athlete}/activities?oldest=${oldest}`);
-        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+        if (!compact || !Array.isArray(data)) return { content: [{ type: "text", text: JSON.stringify(data) }] };
+        const keep = ["id", "name", "type", "start_date_local", "moving_time", "elapsed_time", "distance", "total_elevation_gain",
+          "average_heartrate", "max_heartrate", "gap", "icu_training_load", "icu_hr_zone_times", "icu_ignore_hr",
+          "icu_aerobic_decoupling", "aerobic_decoupling", "icu_decoupling", "decoupling", "lthr", "pa_hr", "average_cadence", "icu_average_watts", "average_speed"];
+        const rows = (data as any[]).map((a) => Object.fromEntries(keep.filter((k) => a[k] != null).map((k) => [k, a[k]])));
+        return { content: [{ type: "text", text: JSON.stringify(rows) }] };
       },
     );
 
