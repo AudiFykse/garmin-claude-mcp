@@ -279,19 +279,39 @@ export class MyMCP extends McpAgent {
         max: z.number().optional().describe("Max results, default 8"),
       },
       async ({ query, max = 8 }) => {
-        const res = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), { headers: { "User-Agent": UA } });
-        const html = await res.text();
         const out: { title: string; url: string; snippet: string }[] = [];
-        const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="result__snippet"[^>]*>([\s\S]*?)<\/a>)?/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(html)) && out.length < max) {
-          let url = m[1];
-          const u = url.match(/[?&]uddg=([^&]+)/); if (u) url = decodeURIComponent(u[1]);
-          if (url.startsWith("//")) url = "https:" + url;
-          if (/duckduckgo\.com\/y\.js/.test(url)) continue;
-          out.push({ title: clean(m[2]), url, snippet: clean(m[3] || "") });
-        }
-        return { content: [{ type: "text", text: JSON.stringify({ query, results: out, note: out.length ? undefined : "No results (search may be rate-limited); try again or rephrase." }) }] };
+        const tried: string[] = [];
+        const add = (title: string, url: string, snippet: string) => {
+          if (!url || out.length >= max || out.some((o) => o.url === url)) return;
+          if (/duckduckgo\.com\/y\.js|bing\.com\/aclick/.test(url)) return;
+          out.push({ title: clean(title), url, snippet: clean(snippet).slice(0, 400) });
+        };
+        // 1) Bing RSS (stable, easy to parse)
+        try {
+          const r = await fetch("https://www.bing.com/search?format=rss&count=" + Math.min(max * 2, 30) + "&q=" + encodeURIComponent(query), { headers: { "User-Agent": UA, "Accept-Language": "en,nb;q=0.8" } });
+          const x = await r.text(); tried.push("bing:" + r.status);
+          for (const it of x.match(/<item>[\s\S]*?<\/item>/g) || []) {
+            const g = (t: string) => ((it.match(new RegExp(`<${t}>([\\s\\S]*?)<\\/${t}>`)) || [])[1] || "").replace(/<!\[CDATA\[|\]\]>/g, "");
+            add(g("title"), g("link").trim(), g("description"));
+          }
+        } catch (e) { tried.push("bing:err"); }
+        // 2) DuckDuckGo lite
+        if (!out.length) try {
+          const r = await fetch("https://lite.duckduckgo.com/lite/", { method: "POST", headers: { "User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded" }, body: "q=" + encodeURIComponent(query) });
+          const h = await r.text(); tried.push("ddg-lite:" + r.status);
+          const re = /<a[^>]+href="([^"]+)"[^>]*class=['"]result-link['"][^>]*>([\s\S]*?)<\/a>[\s\S]*?class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(h))) { let u = m[1]; const q = u.match(/[?&]uddg=([^&]+)/); if (q) u = decodeURIComponent(q[1]); if (u.startsWith("//")) u = "https:" + u; add(m[2], u, m[3]); }
+        } catch (e) { tried.push("ddg-lite:err"); }
+        // 3) DuckDuckGo html
+        if (!out.length) try {
+          const r = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), { headers: { "User-Agent": UA } });
+          const h = await r.text(); tried.push("ddg-html:" + r.status);
+          const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="result__snippet"[^>]*>([\s\S]*?)<\/a>)?/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(h))) { let u = m[1]; const q = u.match(/[?&]uddg=([^&]+)/); if (q) u = decodeURIComponent(q[1]); if (u.startsWith("//")) u = "https:" + u; add(m[2], u, m[3] || ""); }
+        } catch (e) { tried.push("ddg-html:err"); }
+        return { content: [{ type: "text", text: JSON.stringify({ query, results: out, note: out.length ? undefined : "No results from " + tried.join(", ") + ". Try searchStudies, or fetchPage on a known site (e.g. https://uphillathlete.com/?s=...)." }) }] };
       },
     );
 
@@ -320,14 +340,32 @@ export class MyMCP extends McpAgent {
         max: z.number().optional().describe("Max studies, default 8"),
       },
       async ({ query, max = 8 }) => {
+        // Europe PMC: includes PubMed, abstracts in one call, generous rate limits
+        try {
+          const r = await fetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?format=json&resultType=core&pageSize=${max}&sort=RELEVANCE&query=${encodeURIComponent(query)}`, { headers: { "User-Agent": UA } });
+          const j = await r.json() as any;
+          const res: any[] = j?.resultList?.result || [];
+          if (res.length) {
+            const studies = res.map((x) => ({
+              pmid: x.pmid, doi: x.doi, title: x.title, journal: x.journalInfo?.journal?.title || x.bookOrReportDetails?.publisher, year: x.pubYear,
+              authors: (x.authorString || "").split(", ").slice(0, 3).join(", "), openAccess: x.isOpenAccess === "Y", citedBy: x.citedByCount,
+              url: x.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${x.pmid}/` : x.doi ? `https://doi.org/${x.doi}` : `https://europepmc.org/article/${x.source}/${x.id}`,
+              abstract: clean(x.abstractText || "").slice(0, 1800),
+            }));
+            return { content: [{ type: "text", text: JSON.stringify({ query, source: "Europe PMC", studies }) }] };
+          }
+        } catch (e) { /* fall back to PubMed */ }
         const e = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
+        const wait = () => new Promise((r) => setTimeout(r, 400));
         const ids = await (await fetch(`${e}/esearch.fcgi?db=pubmed&retmode=json&sort=relevance&retmax=${max}&term=${encodeURIComponent(query)}`, { headers: { "User-Agent": UA } })).json() as any;
         const list: string[] = ids?.esearchresult?.idlist || [];
         if (!list.length) return { content: [{ type: "text", text: JSON.stringify({ query, studies: [] }) }] };
+        await wait();
         const sum = await (await fetch(`${e}/esummary.fcgi?db=pubmed&retmode=json&id=${list.join(",")}`, { headers: { "User-Agent": UA } })).json() as any;
+        await wait();
         const abs = await (await fetch(`${e}/efetch.fcgi?db=pubmed&rettype=abstract&retmode=text&id=${list.join(",")}`, { headers: { "User-Agent": UA } })).text();
         const studies = list.map((id) => { const r = sum?.result?.[id] || {}; return { pmid: id, title: r.title, journal: r.fulljournalname, year: (r.pubdate || "").slice(0, 4), authors: (r.authors || []).slice(0, 3).map((a: any) => a.name).join(", "), url: `https://pubmed.ncbi.nlm.nih.gov/${id}/` }; });
-        return { content: [{ type: "text", text: JSON.stringify({ query, studies, abstracts: abs.slice(0, 12000) }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ query, source: "PubMed", studies, abstracts: abs.slice(0, 12000) }) }] };
       },
     );
   }
