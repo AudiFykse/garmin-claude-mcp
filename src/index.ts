@@ -287,19 +287,12 @@ export class MyMCP extends McpAgent {
           out.push({ title: clean(title), url, snippet: clean(snippet).slice(0, 400) });
         };
         const words = query.toLowerCase().replace(/[^a-z0-9æøåäöü\s.-]/g, " ").split(/\s+/).filter((w) => w.length >= 4);
-        const relevant = (t: string) => !words.length || words.some((w) => t.toLowerCase().includes(w.replace(/^www\./, "")));
+        const need = Math.max(1, Math.ceil(words.length / 2));
+        const relevant = (t: string) => { if (!words.length) return true; const l = t.toLowerCase(); return words.filter((w) => l.includes(w.replace(/^www\./, "").replace(/\.(com|org|no|net)$/, ""))).length >= need; };
         const addR = (title: string, url: string, snippet: string) => { if (relevant(title + " " + url + " " + snippet)) add(title, url, snippet); };
-        // 1) Mojeek (own index, bot-friendly)
+        // 1) Bing RSS (only results that match the query words)
         try {
-          const r = await fetch("https://www.mojeek.com/search?q=" + encodeURIComponent(query), { headers: { "User-Agent": UA, "Accept-Language": "en,nb;q=0.8" } });
-          const h = await r.text(); tried.push("mojeek:" + r.status);
-          const re = /<h2[^>]*>\s*<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>[\s\S]*?(?:<p class="s"[^>]*>([\s\S]*?)<\/p>)?/g;
-          let m: RegExpExecArray | null;
-          while ((m = re.exec(h))) addR(m[2], m[1].replace(/&amp;/g, "&"), m[3] || "");
-        } catch (e) { tried.push("mojeek:err"); }
-        // 1b) Bing RSS (only results that match the query words)
-        if (out.length < 3) try {
-          const r = await fetch("https://www.bing.com/search?format=rss&count=" + Math.min(max * 2, 30) + "&q=" + encodeURIComponent(query), { headers: { "User-Agent": UA, "Accept-Language": "en,nb;q=0.8" } });
+          const r = await fetch("https://www.bing.com/search?format=rss&setlang=en&cc=us&mkt=en-US&count=" + Math.min(max * 3, 30) + "&q=" + encodeURIComponent(query), { headers: { "User-Agent": UA, "Accept-Language": "en,nb;q=0.8" } });
           const x = await r.text(); tried.push("bing:" + r.status);
           for (const it of x.match(/<item>[\s\S]*?<\/item>/g) || []) {
             const g = (t: string) => ((it.match(new RegExp(`<${t}>([\\s\\S]*?)<\\/${t}>`)) || [])[1] || "").replace(/<!\[CDATA\[|\]\]>/g, "");
@@ -308,7 +301,7 @@ export class MyMCP extends McpAgent {
         } catch (e) { tried.push("bing:err"); }
         // 2) DuckDuckGo lite
         if (out.length < 3) try {
-          const r = await fetch("https://lite.duckduckgo.com/lite/", { method: "POST", headers: { "User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded" }, body: "q=" + encodeURIComponent(query) });
+          const r = await fetch("https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query), { headers: { "User-Agent": UA } });
           const h = await r.text(); tried.push("ddg-lite:" + r.status);
           const re = /<a[^>]+href="([^"]+)"[^>]*class=['"]result-link['"][^>]*>([\s\S]*?)<\/a>[\s\S]*?class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/g;
           let m: RegExpExecArray | null;
@@ -322,6 +315,12 @@ export class MyMCP extends McpAgent {
           let m: RegExpExecArray | null;
           while ((m = re.exec(h))) { let u = m[1]; const q = u.match(/[?&]uddg=([^&]+)/); if (q) u = decodeURIComponent(q[1]); if (u.startsWith("//")) u = "https:" + u; addR(m[2], u, m[3] || ""); }
         } catch (e) { tried.push("ddg-html:err"); }
+        // 4) Marginalia (small independent index; often blogs/forums)
+        if (out.length < 3) try {
+          const r = await fetch("https://api.marginalia.nu/public/search/" + encodeURIComponent(query) + "?count=" + max, { headers: { "User-Agent": UA } });
+          const j = await r.json() as any; tried.push("marginalia:" + r.status);
+          for (const x of j?.results || []) addR(x.title || "", x.url || "", x.description || "");
+        } catch (e) { tried.push("marginalia:err"); }
         return { content: [{ type: "text", text: JSON.stringify({ query, results: out, note: out.length ? undefined : "No results from " + tried.join(", ") + ". Try searchStudies, or fetchPage on a known site (e.g. https://uphillathlete.com/?s=...)." }) }] };
       },
     );
