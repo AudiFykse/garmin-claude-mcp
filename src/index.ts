@@ -286,30 +286,41 @@ export class MyMCP extends McpAgent {
           if (/duckduckgo\.com\/y\.js|bing\.com\/aclick/.test(url)) return;
           out.push({ title: clean(title), url, snippet: clean(snippet).slice(0, 400) });
         };
-        // 1) Bing RSS (stable, easy to parse)
+        const words = query.toLowerCase().replace(/[^a-z0-9æøåäöü\s.-]/g, " ").split(/\s+/).filter((w) => w.length >= 4);
+        const relevant = (t: string) => !words.length || words.some((w) => t.toLowerCase().includes(w.replace(/^www\./, "")));
+        const addR = (title: string, url: string, snippet: string) => { if (relevant(title + " " + url + " " + snippet)) add(title, url, snippet); };
+        // 1) Mojeek (own index, bot-friendly)
         try {
+          const r = await fetch("https://www.mojeek.com/search?q=" + encodeURIComponent(query), { headers: { "User-Agent": UA, "Accept-Language": "en,nb;q=0.8" } });
+          const h = await r.text(); tried.push("mojeek:" + r.status);
+          const re = /<h2[^>]*>\s*<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>[\s\S]*?(?:<p class="s"[^>]*>([\s\S]*?)<\/p>)?/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(h))) addR(m[2], m[1].replace(/&amp;/g, "&"), m[3] || "");
+        } catch (e) { tried.push("mojeek:err"); }
+        // 1b) Bing RSS (only results that match the query words)
+        if (out.length < 3) try {
           const r = await fetch("https://www.bing.com/search?format=rss&count=" + Math.min(max * 2, 30) + "&q=" + encodeURIComponent(query), { headers: { "User-Agent": UA, "Accept-Language": "en,nb;q=0.8" } });
           const x = await r.text(); tried.push("bing:" + r.status);
           for (const it of x.match(/<item>[\s\S]*?<\/item>/g) || []) {
             const g = (t: string) => ((it.match(new RegExp(`<${t}>([\\s\\S]*?)<\\/${t}>`)) || [])[1] || "").replace(/<!\[CDATA\[|\]\]>/g, "");
-            add(g("title"), g("link").trim(), g("description"));
+            addR(g("title"), g("link").trim(), g("description"));
           }
         } catch (e) { tried.push("bing:err"); }
         // 2) DuckDuckGo lite
-        if (!out.length) try {
+        if (out.length < 3) try {
           const r = await fetch("https://lite.duckduckgo.com/lite/", { method: "POST", headers: { "User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded" }, body: "q=" + encodeURIComponent(query) });
           const h = await r.text(); tried.push("ddg-lite:" + r.status);
           const re = /<a[^>]+href="([^"]+)"[^>]*class=['"]result-link['"][^>]*>([\s\S]*?)<\/a>[\s\S]*?class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/g;
           let m: RegExpExecArray | null;
-          while ((m = re.exec(h))) { let u = m[1]; const q = u.match(/[?&]uddg=([^&]+)/); if (q) u = decodeURIComponent(q[1]); if (u.startsWith("//")) u = "https:" + u; add(m[2], u, m[3]); }
+          while ((m = re.exec(h))) { let u = m[1]; const q = u.match(/[?&]uddg=([^&]+)/); if (q) u = decodeURIComponent(q[1]); if (u.startsWith("//")) u = "https:" + u; addR(m[2], u, m[3]); }
         } catch (e) { tried.push("ddg-lite:err"); }
         // 3) DuckDuckGo html
-        if (!out.length) try {
+        if (out.length < 3) try {
           const r = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), { headers: { "User-Agent": UA } });
           const h = await r.text(); tried.push("ddg-html:" + r.status);
           const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="result__snippet"[^>]*>([\s\S]*?)<\/a>)?/g;
           let m: RegExpExecArray | null;
-          while ((m = re.exec(h))) { let u = m[1]; const q = u.match(/[?&]uddg=([^&]+)/); if (q) u = decodeURIComponent(q[1]); if (u.startsWith("//")) u = "https:" + u; add(m[2], u, m[3] || ""); }
+          while ((m = re.exec(h))) { let u = m[1]; const q = u.match(/[?&]uddg=([^&]+)/); if (q) u = decodeURIComponent(q[1]); if (u.startsWith("//")) u = "https:" + u; addR(m[2], u, m[3] || ""); }
         } catch (e) { tried.push("ddg-html:err"); }
         return { content: [{ type: "text", text: JSON.stringify({ query, results: out, note: out.length ? undefined : "No results from " + tried.join(", ") + ". Try searchStudies, or fetchPage on a known site (e.g. https://uphillathlete.com/?s=...)." }) }] };
       },
@@ -320,15 +331,16 @@ export class MyMCP extends McpAgent {
       {
         url: z.string().describe("Full https URL of a public web page"),
         maxChars: z.number().optional().describe("Max characters of text to return, default 15000"),
+        raw: z.boolean().optional().describe("Return raw HTML instead of cleaned text"),
       },
-      async ({ url, maxChars = 15000 }) => {
+      async ({ url, maxChars = 15000, raw: wantRaw = false }) => {
         if (!/^https:\/\//.test(url)) throw new Error("Only https URLs");
         const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html,text/plain" }, redirect: "follow" });
         const type = res.headers.get("content-type") || "";
         if (!/text|html|json|xml/.test(type)) throw new Error("Not a text page: " + type);
         const raw = await res.text();
         const title = (raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "";
-        const text = /html/.test(type) ? clean(raw) : raw;
+        const text = /html/.test(type) && !wantRaw ? clean(raw) : raw;
         return { content: [{ type: "text", text: JSON.stringify({ url: res.url, status: res.status, title: clean(title), text: text.slice(0, maxChars), truncated: text.length > maxChars }) }] };
       },
     );
