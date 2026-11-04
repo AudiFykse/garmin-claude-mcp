@@ -334,6 +334,29 @@ export class MyMCP extends McpAgent {
       },
       async ({ url, maxChars = 15000, raw: wantRaw = false }) => {
         if (!/^https:\/\//.test(url)) throw new Error("Only https URLs");
+        // Scholarly pages often show only a cookie wall to bots: read via the open APIs instead
+        const pm = url.match(/pubmed\.ncbi\.nlm\.nih\.gov\/(\d+)/) || url.match(/ncbi\.nlm\.nih\.gov\/pubmed\/(\d+)/);
+        const pmc = url.match(/(PMC\d+)/i);
+        const doi = url.match(/doi\.org\/(10\.[^?#\s]+)/i);
+        if (pm || pmc || doi) {
+          const q = pm ? `EXT_ID:${pm[1]} AND SRC:MED` : pmc ? `PMCID:${pmc[1].toUpperCase()}` : `DOI:"${decodeURIComponent(doi![1])}"`;
+          const j = await (await fetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?format=json&resultType=core&pageSize=1&query=${encodeURIComponent(q)}`, { headers: { "User-Agent": UA } })).json().catch(() => null) as any;
+          const x = j?.resultList?.result?.[0];
+          let body = "", abs = x ? clean(x.abstractText || "") : "";
+          const pmcid = x?.pmcid || (pmc && pmc[1].toUpperCase());
+          if (pmcid) {
+            const xr = await fetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/${pmcid}/fullTextXML`, { headers: { "User-Agent": UA } }).catch(() => null);
+            if (xr && xr.ok) { const xml = await xr.text(); const b = xml.match(/<body[\s\S]*<\/body>/); body = clean((b ? b[0] : "").replace(/<title>/g, "\n## ").replace(/<\/title>/g, "\n").replace(/<xref[^>]*>[\s\S]*?<\/xref>/g, "")); }
+          }
+          if (!abs && pm) {
+            const t = await (await fetch(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&rettype=abstract&retmode=text&id=${pm[1]}`, { headers: { "User-Agent": UA } })).text().catch(() => "");
+            abs = t;
+          }
+          if (abs || body) {
+            const text = (x ? `${x.title}\n${x.authorString || ""}\n${x.journalInfo?.journal?.title || ""} ${x.pubYear || ""}\n\n` : "") + "ABSTRACT\n" + abs + (body ? "\n\nFULL TEXT (open access)\n" + body : "\n\n(Full text not open access; abstract only.)");
+            return { content: [{ type: "text", text: JSON.stringify({ url, status: 200, title: x?.title || "", source: "Europe PMC / PubMed API", text: text.slice(0, maxChars), truncated: text.length > maxChars }) }] };
+          }
+        }
         const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html,text/plain" }, redirect: "follow" });
         const type = res.headers.get("content-type") || "";
         if (!/text|html|json|xml/.test(type)) throw new Error("Not a text page: " + type);
