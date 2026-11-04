@@ -263,6 +263,73 @@ export class MyMCP extends McpAgent {
         return { content: [{ type: "text", text: JSON.stringify(data) }] };
       },
     );
+
+    // --- research tools: lets the coach look up sources on its own ---
+    const UA = "Mozilla/5.0 (compatible; BasekampCoach/1.0)";
+    const clean = (html: string) => html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+      .replace(/<(br|p|div|li|h[1-6]|tr|section|article)[^>]*>/gi, "\n").replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'")
+      .replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+    this.server.tool(
+      "webSearch",
+      {
+        query: z.string().describe("Search query, e.g. 'Uphill Athlete heart rate drift test'"),
+        max: z.number().optional().describe("Max results, default 8"),
+      },
+      async ({ query, max = 8 }) => {
+        const res = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), { headers: { "User-Agent": UA } });
+        const html = await res.text();
+        const out: { title: string; url: string; snippet: string }[] = [];
+        const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="result__snippet"[^>]*>([\s\S]*?)<\/a>)?/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(html)) && out.length < max) {
+          let url = m[1];
+          const u = url.match(/[?&]uddg=([^&]+)/); if (u) url = decodeURIComponent(u[1]);
+          if (url.startsWith("//")) url = "https:" + url;
+          if (/duckduckgo\.com\/y\.js/.test(url)) continue;
+          out.push({ title: clean(m[2]), url, snippet: clean(m[3] || "") });
+        }
+        return { content: [{ type: "text", text: JSON.stringify({ query, results: out, note: out.length ? undefined : "No results (search may be rate-limited); try again or rephrase." }) }] };
+      },
+    );
+
+    this.server.tool(
+      "fetchPage",
+      {
+        url: z.string().describe("Full https URL of a public web page"),
+        maxChars: z.number().optional().describe("Max characters of text to return, default 15000"),
+      },
+      async ({ url, maxChars = 15000 }) => {
+        if (!/^https:\/\//.test(url)) throw new Error("Only https URLs");
+        const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html,text/plain" }, redirect: "follow" });
+        const type = res.headers.get("content-type") || "";
+        if (!/text|html|json|xml/.test(type)) throw new Error("Not a text page: " + type);
+        const raw = await res.text();
+        const title = (raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "";
+        const text = /html/.test(type) ? clean(raw) : raw;
+        return { content: [{ type: "text", text: JSON.stringify({ url: res.url, status: res.status, title: clean(title), text: text.slice(0, maxChars), truncated: text.length > maxChars }) }] };
+      },
+    );
+
+    this.server.tool(
+      "searchStudies",
+      {
+        query: z.string().describe("PubMed search, e.g. 'polarized training recreational runners'"),
+        max: z.number().optional().describe("Max studies, default 8"),
+      },
+      async ({ query, max = 8 }) => {
+        const e = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
+        const ids = await (await fetch(`${e}/esearch.fcgi?db=pubmed&retmode=json&sort=relevance&retmax=${max}&term=${encodeURIComponent(query)}`, { headers: { "User-Agent": UA } })).json() as any;
+        const list: string[] = ids?.esearchresult?.idlist || [];
+        if (!list.length) return { content: [{ type: "text", text: JSON.stringify({ query, studies: [] }) }] };
+        const sum = await (await fetch(`${e}/esummary.fcgi?db=pubmed&retmode=json&id=${list.join(",")}`, { headers: { "User-Agent": UA } })).json() as any;
+        const abs = await (await fetch(`${e}/efetch.fcgi?db=pubmed&rettype=abstract&retmode=text&id=${list.join(",")}`, { headers: { "User-Agent": UA } })).text();
+        const studies = list.map((id) => { const r = sum?.result?.[id] || {}; return { pmid: id, title: r.title, journal: r.fulljournalname, year: (r.pubdate || "").slice(0, 4), authors: (r.authors || []).slice(0, 3).map((a: any) => a.name).join(", "), url: `https://pubmed.ncbi.nlm.nih.gov/${id}/` }; });
+        return { content: [{ type: "text", text: JSON.stringify({ query, studies, abstracts: abs.slice(0, 12000) }) }] };
+      },
+    );
   }
 }
 
