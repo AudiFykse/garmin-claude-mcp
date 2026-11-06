@@ -12,6 +12,27 @@ export class MyMCP extends McpAgent {
     return `Basic ${btoa(`API_KEY:${this.env.INTERVALS_API_KEY}`)}`;
   }
 
+  private async strengthSets(activityId: string) {
+    const id = encodeURIComponent(activityId);
+    let buf: ArrayBuffer | null = null; const tried: string[] = [];
+    for (const path of [`/activity/${id}/file`, `/activity/${id}/fit-file`]) {
+      try {
+        const r = await fetch(`${BASE}${path}`, { headers: { Authorization: this.authHeader() } });
+        tried.push(path + ":" + r.status); if (!r.ok) continue;
+        let b = await r.arrayBuffer(); const u = new Uint8Array(b);
+        if (u[0] === 0x1f && u[1] === 0x8b) b = await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+        const v = new Uint8Array(b); if (String.fromCharCode(v[8], v[9], v[10], v[11]) === ".FIT") { buf = b; break; }
+        tried.push(path + ":not-fit");
+      } catch (e: any) { tried.push(path + ":" + (e && e.message)); }
+    }
+    if (!buf) return { content: [{ type: "text", text: JSON.stringify({ activityId, sets: [], note: "Could not get the FIT file (" + tried.join(", ") + ")" }) }] };
+    const all = parseFitSets(buf);
+    const active = all.filter((x) => x.type === "active");
+    const rests = all.filter((x) => x.type === "rest" && x.secs).map((x) => x.secs as number).sort((a, b) => a - b);
+    const sets = all.map((x, i) => ({ ...x, secPerRep: x.type === "active" && x.reps && x.secs ? Math.round((x.secs / x.reps) * 10) / 10 : undefined, n: i + 1 }));
+    const summary = { activeSets: active.length, totalReps: active.reduce((a, x) => a + (x.reps || 0), 0), medianRestSec: rests.length ? rests[Math.floor(rests.length / 2)] : null, recorded: all.length > 0 };
+    return { content: [{ type: "text", text: JSON.stringify({ activityId, summary, sets, note: all.length ? undefined : "No sets recorded in this activity (the watch did not log sets/reps)." }) }] };
+  }
   private async icu(path: string, init: RequestInit = {}) {
     const res = await fetch(`${BASE}${path}`, {
       ...init,
@@ -149,27 +170,7 @@ export class MyMCP extends McpAgent {
       {
         activityId: z.string().describe("Activity id from getRecentActivities, e.g. i204077734"),
       },
-      async ({ activityId }) => {
-        const id = encodeURIComponent(activityId);
-        let buf: ArrayBuffer | null = null; const tried: string[] = [];
-        for (const path of [`/activity/${id}/file`, `/activity/${id}/fit-file`]) {
-          try {
-            const r = await fetch(`${BASE}${path}`, { headers: { Authorization: this.authHeader() } });
-            tried.push(path + ":" + r.status); if (!r.ok) continue;
-            let b = await r.arrayBuffer(); const u = new Uint8Array(b);
-            if (u[0] === 0x1f && u[1] === 0x8b) b = await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
-            const v = new Uint8Array(b); if (String.fromCharCode(v[8], v[9], v[10], v[11]) === ".FIT") { buf = b; break; }
-            tried.push(path + ":not-fit");
-          } catch (e: any) { tried.push(path + ":" + (e && e.message)); }
-        }
-        if (!buf) return { content: [{ type: "text", text: JSON.stringify({ activityId, sets: [], note: "Could not get the FIT file (" + tried.join(", ") + ")" }) }] };
-        const all = parseFitSets(buf);
-        const active = all.filter((x) => x.type === "active");
-        const rests = all.filter((x) => x.type === "rest" && x.secs).map((x) => x.secs as number).sort((a, b) => a - b);
-        const sets = all.map((x, i) => ({ ...x, secPerRep: x.type === "active" && x.reps && x.secs ? Math.round((x.secs / x.reps) * 10) / 10 : undefined, n: i + 1 }));
-        const summary = { activeSets: active.length, totalReps: active.reduce((a, x) => a + (x.reps || 0), 0), medianRestSec: rests.length ? rests[Math.floor(rests.length / 2)] : null, recorded: all.length > 0 };
-        return { content: [{ type: "text", text: JSON.stringify({ activityId, summary, sets, note: all.length ? undefined : "No sets recorded in this activity (the watch did not log sets/reps)." }) }] };
-      },
+      async ({ activityId }) => this.strengthSets(activityId),
     );
 
     this.server.tool(
@@ -178,8 +179,10 @@ export class MyMCP extends McpAgent {
         activityId: z.string().describe("Activity id from getRecentActivities, e.g. i204077681"),
         resolution: z.number().optional().describe("Seconds between stream samples, default 30"),
         hrThreshold: z.number().optional().describe("Heart rate to report time above, e.g. aerobic threshold"),
+        strengthSets: z.boolean().optional().describe("For strength activities: return sets, reps, weight, rest and seconds per rep from the FIT file instead of streams"),
       },
-      async ({ activityId, resolution = 30, hrThreshold }) => {
+      async ({ activityId, resolution = 30, hrThreshold, strengthSets }) => {
+        if (strengthSets) return this.strengthSets(activityId);
         const id = encodeURIComponent(activityId);
         const [ivRes, stRes] = await Promise.allSettled([
           this.icu(`/activity/${id}/intervals`),
