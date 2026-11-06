@@ -144,6 +144,35 @@ export class MyMCP extends McpAgent {
     );
 
     this.server.tool(
+      "getStrengthSets",
+      "Sets from a Garmin strength activity: per set reps, weight (kg), duration, exercise category, and rest periods between sets. Also seconds per rep as a rough tempo. Only works if the watch recorded sets (strength activity with rep counting).",
+      {
+        activityId: z.string().describe("Activity id from getRecentActivities, e.g. i204077734"),
+      },
+      async ({ activityId }) => {
+        const id = encodeURIComponent(activityId);
+        let buf: ArrayBuffer | null = null; const tried: string[] = [];
+        for (const path of [`/activity/${id}/file`, `/activity/${id}/fit-file`]) {
+          try {
+            const r = await fetch(`${BASE}${path}`, { headers: { Authorization: this.authHeader() } });
+            tried.push(path + ":" + r.status); if (!r.ok) continue;
+            let b = await r.arrayBuffer(); const u = new Uint8Array(b);
+            if (u[0] === 0x1f && u[1] === 0x8b) b = await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+            const v = new Uint8Array(b); if (String.fromCharCode(v[8], v[9], v[10], v[11]) === ".FIT") { buf = b; break; }
+            tried.push(path + ":not-fit");
+          } catch (e: any) { tried.push(path + ":" + (e && e.message)); }
+        }
+        if (!buf) return { content: [{ type: "text", text: JSON.stringify({ activityId, sets: [], note: "Could not get the FIT file (" + tried.join(", ") + ")" }) }] };
+        const all = parseFitSets(buf);
+        const active = all.filter((x) => x.type === "active");
+        const rests = all.filter((x) => x.type === "rest" && x.secs).map((x) => x.secs as number).sort((a, b) => a - b);
+        const sets = all.map((x, i) => ({ ...x, secPerRep: x.type === "active" && x.reps && x.secs ? Math.round((x.secs / x.reps) * 10) / 10 : undefined, n: i + 1 }));
+        const summary = { activeSets: active.length, totalReps: active.reduce((a, x) => a + (x.reps || 0), 0), medianRestSec: rests.length ? rests[Math.floor(rests.length / 2)] : null, recorded: all.length > 0 };
+        return { content: [{ type: "text", text: JSON.stringify({ activityId, summary, sets, note: all.length ? undefined : "No sets recorded in this activity (the watch did not log sets/reps)." }) }] };
+      },
+    );
+
+    this.server.tool(
       "getActivityDetail",
       {
         activityId: z.string().describe("Activity id from getRecentActivities, e.g. i204077681"),
@@ -405,6 +434,46 @@ export class MyMCP extends McpAgent {
   }
 }
 
+
+const EX_CAT = ["bench_press","calf_raise","cardio","carry","chop","core","crunch","curl","deadlift","flye","hip_raise","hip_stability","hip_swing","hyperextension","lateral_raise","leg_curl","leg_raise","lunge","olympic_lift","plank","plyo","pull_up","push_up","row","shoulder_press","shoulder_stability","shrug","sit_up","squat","total_body","triceps_extension","warm_up","run"];
+// Minimal FIT parser: returns the "set" messages (global 225) from a strength activity
+function parseFitSets(buf: ArrayBuffer) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  const hs = u8[0]; if (String.fromCharCode(u8[8], u8[9], u8[10], u8[11]) !== ".FIT") throw new Error("Not a FIT file");
+  const end = hs + dv.getUint32(4, true); let o = hs; const defs: Record<number, any> = {}; const sets: any[] = [];
+  const rd = (pos: number, size: number, le: boolean) => size === 1 ? u8[pos] : size === 2 ? dv.getUint16(pos, le) : size === 4 ? dv.getUint32(pos, le) : null;
+  while (o < end && o < u8.length) {
+    const h = u8[o++];
+    if (h & 0x80) { const d = defs[(h >> 5) & 3]; if (!d) break; o = readData(d); continue; }
+    const local = h & 0x0f;
+    if (h & 0x40) {
+      const le = u8[o + 1] === 0, glob = dv.getUint16(o + 2, le), n = u8[o + 4]; o += 5; const f: any[] = [];
+      for (let i = 0; i < n; i++) { f.push({num: u8[o], size: u8[o + 1]}); o += 3; }
+      let dsz = 0; if (h & 0x20) { const nd = u8[o++]; for (let i = 0; i < nd; i++) { dsz += u8[o + 1]; o += 3; } }
+      defs[local] = {le, glob, f, dsz}; continue;
+    }
+    const d = defs[local]; if (!d) break; o = readData(d);
+  }
+  function readData(d: any) {
+    let p = o; const v: Record<number, any> = {};
+    for (const f of d.f) { if (d.glob === 225) { if (f.size <= 4) v[f.num] = rd(p, f.size, d.le); else if (f.num === 7 || f.num === 8) v[f.num] = rd(p, 2, d.le); } p += f.size; }
+    p += d.dsz;
+    if (d.glob === 225) {
+      const bad = (x: any, size: number) => x == null || x === (size === 1 ? 0xff : size === 2 ? 0xffff : 0xffffffff);
+      const sz = (num: number) => (d.f.find((f: any) => f.num === num) || {}).size || 4;
+      sets.push({
+        type: v[5] === 0 ? "rest" : "active",
+        start: bad(v[6], 4) ? null : new Date((v[6] + 631065600) * 1000).toISOString(),
+        secs: bad(v[0], 4) ? null : Math.round(v[0] / 100) / 10,
+        reps: bad(v[3], sz(3)) ? null : v[3],
+        kg: bad(v[4], sz(4)) ? null : Math.round(v[4] / 16 * 10) / 10,
+        category: bad(v[7], 2) ? null : (EX_CAT[v[7]] || "cat_" + v[7]),
+      });
+    }
+    return p;
+  }
+  return sets;
+}
 function loginPage(state: string, error: string) {
   return `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Intervals.icu MCP</title>
