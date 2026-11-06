@@ -179,10 +179,10 @@ export class MyMCP extends McpAgent {
         activityId: z.string().describe("Activity id from getRecentActivities, e.g. i204077681"),
         resolution: z.number().optional().describe("Seconds between stream samples, default 30"),
         hrThreshold: z.number().optional().describe("Heart rate to report time above, e.g. aerobic threshold"),
-        strengthSets: z.boolean().optional().describe("For strength activities: return sets, reps, weight, rest and seconds per rep from the FIT file instead of streams"),
+        strengthSets: z.union([z.boolean(), z.string()]).optional().describe("For strength activities: return sets, reps, weight, rest and seconds per rep from the FIT file instead of streams"),
       },
       async ({ activityId, resolution = 30, hrThreshold, strengthSets }) => {
-        if (strengthSets) return this.strengthSets(activityId);
+        if (strengthSets === true || strengthSets === "true") return this.strengthSets(activityId);
         const id = encodeURIComponent(activityId);
         const [ivRes, stRes] = await Promise.allSettled([
           this.icu(`/activity/${id}/intervals`),
