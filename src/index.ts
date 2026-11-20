@@ -184,10 +184,11 @@ export class MyMCP extends McpAgent {
       async ({ activityId, resolution = 30, hrThreshold, strengthSets }) => {
         if (strengthSets === true || strengthSets === "true") return this.strengthSets(activityId);
         const id = encodeURIComponent(activityId);
-        const [ivRes, stRes] = await Promise.allSettled([
+        const [ivRes, stRes, rsRes] = await Promise.allSettled([
           this.icu(`/activity/${id}/intervals`),
           this.icu(`/activity/${id}/streams?types=time,heartrate,velocity_smooth,distance,altitude,cadence,watts,stance_time,vertical_oscillation,step_length`)
             .catch(() => this.icu(`/activity/${id}/streams?types=time,heartrate,velocity_smooth,distance,altitude,cadence`)),
+          this.icu(`/activity/${id}/streams?types=respiration`),
         ]);
 
         const laps = ivRes.status === "fulfilled"
@@ -211,8 +212,11 @@ export class MyMCP extends McpAgent {
         if (stRes.status === "fulfilled" && Array.isArray(stRes.value)) {
           for (const x of stRes.value as any[]) if (x?.type && Array.isArray(x.data)) s[x.type] = x.data;
         }
+        if (rsRes.status === "fulfilled" && Array.isArray(rsRes.value)) {
+          for (const x of rsRes.value as any[]) if (x?.type === "respiration" && Array.isArray(x.data)) s.respiration = x.data;
+        }
         const t = s.time ?? [], hr = s.heartrate ?? [], v = s.velocity_smooth ?? [], d = s.distance ?? [], alt = s.altitude ?? [], cad = s.cadence ?? [];
-        const pw = s.watts ?? [], gct = s.stance_time ?? [], vo = s.vertical_oscillation ?? [], stp = s.step_length ?? [];
+        const pw = s.watts ?? [], gct = s.stance_time ?? [], vo = s.vertical_oscillation ?? [], stp = s.step_length ?? [], rsp = s.respiration ?? [];
         const n = t.length;
         const mean = (a: number[]) => { const b = a.filter((x) => Number.isFinite(x) && x > 0); return b.length ? b.reduce((p, q) => p + q, 0) / b.length : null; };
         const r1 = (x: number | null) => (x == null ? null : Math.round(x * 10) / 10);
@@ -270,6 +274,7 @@ export class MyMCP extends McpAgent {
             d[i0] != null ? Math.round(d[i0]) : null, alt[i0] != null ? Math.round(alt[i0]) : null, r0(avg(cad, i0, i1)),
             pw.length ? r0(avg(pw, i0, i1)) : null, gct.length ? r0(avg(gct, i0, i1)) : null,
             vo.length ? r1(avg(vo, i0, i1)) : null, stp.length ? r0(avg(stp, i0, i1)) : null,
+            rsp.length === n ? r1(avg(rsp, i0, i1)) : null,
           ]);
           i0 = i1;
         }
@@ -280,7 +285,7 @@ export class MyMCP extends McpAgent {
           splits,
           halves,
           timeAboveHr,
-          streams: { columns: ["sec", "hr", "kmh", "m", "alt", "cadence", "watts", "gct_ms", "vo_mm", "step_mm"], resolution: step, data: samples },
+          streams: { columns: ["sec", "hr", "kmh", "m", "alt", "cadence", "watts", "gct_ms", "vo_mm", "step_mm", "resp_brpm"], resolution: step, data: samples },
           errors: [ivRes, stRes].filter((r) => r.status === "rejected").map((r: any) => String(r.reason)),
         };
         return { content: [{ type: "text", text: JSON.stringify(out) }] };
